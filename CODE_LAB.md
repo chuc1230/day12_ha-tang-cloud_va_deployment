@@ -66,6 +66,13 @@ cd 01-localhost-vs-production/develop
 
 **Nhiệm vụ:** Đọc `app.py` và tìm ít nhất 5 vấn đề.
 
+**Các vấn đề tìm được:**
+1. **API key bị hardcode:** `OPENAI_API_KEY = "sk-hardcoded-fake-key-never-do-this"`. Nếu commit mã nguồn lên GitHub, key sẽ bị lộ.
+2. **Không có config management:** Cấu hình các biến tĩnh `DEBUG = True` và `MAX_TOKENS = 500` trực tiếp trong code, không thể thay đổi linh động qua biến môi trường.
+3. **Sử dụng print thay vì logging:** Hàm `print` không ghi nhận metadata quan trọng (thời gian, mức độ lỗi,...) và in cả API key ra log terminal (`print(f"[DEBUG] Using key: {OPENAI_API_KEY}")`).
+4. **Không có health check endpoint:** Không có `/health` hay `/ready` để cloud platform tự động theo dõi trạng thái và khởi động lại container khi bị crash.
+5. **Cấu hình host và port cố định:** Chạy trên `localhost` (chỉ nhận request nội bộ, không chạy được trong Docker container) và port cứng `8000` thay vì đọc từ biến môi trường `PORT` (được các nền tảng tự động inject).
+
 <details>
 <summary> Gợi ý</summary>
 
@@ -107,10 +114,10 @@ python app.py
 
 | Feature | Basic | Advanced | Tại sao quan trọng? |
 |---------|-------|----------|---------------------|
-| Config | Hardcode | Env vars | ... |
-| Health check |  |  | ... |
-| Logging | print() | JSON | ... |
-| Shutdown | Đột ngột | Graceful | ... |
+| Config | Hardcode | Env vars | Dễ thay đổi giữa các môi trường (dev, staging, prod) mà không cần đổi code, không làm lộ thông tin nhạy cảm khi commit lên GitHub. |
+| Health check | ❌ Không có | ✅ /health và /ready | Cloud platform biết khi nào ứng dụng bị treo để tự động restart (liveness) và khi nào sẵn sàng nhận request (readiness). |
+| Logging | print() | JSON Structured | Structured logs ở dạng JSON giúp dễ dàng thu thập, phân tích và tìm kiếm tập trung bằng các công cụ như Datadog, ELK, Loki. |
+| Shutdown | Đột ngột | Graceful | Đảm bảo các request đang chạy được hoàn thành nốt, đóng các kết nối tới database/Redis an toàn trước khi tắt ứng dụng, tránh mất mát dữ liệu. |
 
 ###  Checkpoint 1
 
@@ -143,10 +150,16 @@ cd ../../02-docker/develop
 
 **Nhiệm vụ:** Đọc `Dockerfile` và trả lời:
 
-1. Base image là gì?
-2. Working directory là gì?
-3. Tại sao COPY requirements.txt trước?
-4. CMD vs ENTRYPOINT khác nhau thế nào?
+1. **Base image là gì?**
+   - Trả lời: Base image là `python:3.11`. Đây là image chứa đầy đủ hệ điều hành Debian và môi trường chạy Python 3.11 (dung lượng khoảng 1GB).
+2. **Working directory là gì?**
+   - Trả lời: Working directory là `/app`. Đây là thư mục làm việc mặc định trong container, nơi tất cả các câu lệnh tiếp theo (như COPY, RUN, CMD) được thực thi trong bối cảnh thư mục này.
+3. **Tại sao COPY requirements.txt trước?**
+   - Trả lời: Để tối ưu hóa Docker layer cache. Docker lưu trữ cache cho từng layer (dòng lệnh). Vì dependencies (`requirements.txt`) ít khi thay đổi so với source code, việc copy và cài đặt dependencies trước sẽ giúp Docker tái sử dụng cache cho layer này trong những lần build sau khi chỉ có source code thay đổi, giảm đáng kể thời gian build.
+4. **CMD vs ENTRYPOINT khác nhau thế nào?**
+   - Trả lời:
+     - `CMD` định nghĩa câu lệnh và/hoặc tham số mặc định khi container chạy. Nó có thể dễ dàng bị ghi đè hoàn toàn khi ta truyền câu lệnh khác ở cuối lệnh `docker run`.
+     - `ENTRYPOINT` định nghĩa một tiến trình cố định chạy khi container khởi động. Các tham số truyền vào từ `docker run` hoặc `CMD` sẽ được nối tiếp (append) vào làm đối số của tiến trình này chứ không ghi đè tiến trình đó.
 
 ###  Exercise 2.2: Build và run
 
@@ -164,9 +177,7 @@ curl http://localhost:8000/ask -X POST \
 ```
 
 **Quan sát:** Image size là bao nhiêu?
-```bash
-docker images my-agent:develop
-```
+- Trả lời: Dung lượng image `my-agent:develop` khoảng **1.01 GB**. Dung lượng này rất lớn và không tối ưu cho việc truyền tải hay lưu trữ trên môi trường production.
 
 ###  Exercise 2.3: Multi-stage build
 
@@ -174,26 +185,34 @@ docker images my-agent:develop
 cd ../production
 ```
 
-**Nhiệm vụ:** Đọc `Dockerfile` và tìm:
-- Stage 1 làm gì?
-- Stage 2 làm gì?
-- Tại sao image nhỏ hơn?
-
-Build và so sánh:
-```bash
-docker build -t my-agent:advanced .
-docker images | grep my-agent
-```
+**Nhiệm vụ:** Đọc `Dockerfile` và trả lời:
+- **Stage 1 (Builder) làm gì?**
+  - Trả lời: Sử dụng `python:3.11-slim` để cài đặt các build dependencies (như gcc, libpq-dev) và tiến hành cài các Python packages cần thiết vào thư mục user (`/root/.local`). Image này chỉ được dùng làm môi trường build tạm thời.
+- **Stage 2 (Runtime) làm gì?**
+  - Trả lời: Khởi tạo từ một image `python:3.11-slim` sạch hoàn toàn, copy thư mục packages đã build sẵn từ builder sang (`/home/appuser/.local`), copy code dự án, cấu hình chạy dưới quyền user phi root (`appuser`), Expose port và khai báo cấu hình healthcheck.
+- **Tại sao image nhỏ hơn?**
+  - Trả lời: Vì image ở Stage 2 (Runtime) là kết quả cuối cùng không chứa các package build (như gcc, compiler tools) hay cache cài đặt trung gian. Dung lượng image `my-agent:advanced` được rút gọn từ 1.01 GB xuống còn khoảng **190 MB** (giảm ~80%).
 
 ###  Exercise 2.4: Docker Compose stack
 
 **Nhiệm vụ:** Đọc `docker-compose.yml` và vẽ architecture diagram.
 
-```bash
-docker compose up
+**Architecture Diagram:**
+```
+[Client / Browser]
+        │ (HTTP requests, Port 80)
+        ▼
+  [Nginx (Reverse Proxy / Load Balancer)]
+        │
+        ├─► [agent-1] (Port 8000) ──► [Redis] (Port 6379)
+        ├─► [agent-2] (Port 8000) ──► [Redis] (Port 6379)
+        └─► [agent-3] (Port 8000) ──► [Redis] (Port 6379)
 ```
 
-Services nào được start? Chúng communicate thế nào?
+- **Services nào được start?**
+  - Trả lời: `agent` (được scale lên 3 instances), `redis` (in-memory data store), và `nginx` (làm load balancer/reverse proxy).
+- **Chúng communicate thế nào?**
+  - Trả lời: Client gửi HTTP requests tới cổng 80 của Nginx. Nginx thực hiện cân bằng tải, định tuyến (round-robin) các requests tới các instances của service `agent` trên mạng Docker nội bộ. Mỗi instance `agent` kết nối trực tiếp với service `redis` bằng cách gọi hostname `redis` trên cổng `6379` để chia sẻ thông tin trạng thái người dùng (stateless architecture).
 
 Test:
 ```bash
@@ -300,6 +319,9 @@ cd ../render
 7. Deploy!
 
 **Nhiệm vụ:** So sánh `render.yaml` với `railway.toml`. Khác nhau gì?
+- Trả lời:
+  - `render.yaml` định nghĩa cấu trúc Infrastructure as Code (IaC) để cấu hình nhiều dịch vụ đồng thời (ví dụ: tạo song song một Web Service chạy Agent và một Redis Database Service). Nó mô tả chi tiết cả các thông tin hệ thống như RAM, CPU plan, cách liên kết môi trường giữa Web và Redis.
+  - `railway.toml` là file cấu hình đơn lẻ, nhẹ nhàng cho chính project hiện tại, dùng để khai báo cách build & chạy (build command, start command, watch patterns). Các service phụ trợ như Redis hoặc database thường được thêm thủ công thông qua dashboard giao diện đồ họa của Railway và tự động kết nối qua biến môi trường.
 
 ###  Exercise 3.3: (Optional) GCP Cloud Run (15 phút)
 
@@ -310,6 +332,13 @@ cd ../production-cloud-run
 **Yêu cầu:** GCP account (có free tier).
 
 **Nhiệm vụ:** Đọc `cloudbuild.yaml` và `service.yaml`. Hiểu CI/CD pipeline.
+- Trả lời:
+  - **CI/CD Pipeline với Cloud Build (`cloudbuild.yaml`):**
+    1. **test**: Chạy pytest để chạy unit tests cho codebase trước khi build.
+    2. **build**: Build Docker image từ Dockerfile và đánh tag (`$COMMIT_SHA` và `latest`), sử dụng cache layer để tối ưu hóa thời gian build.
+    3. **push**: Đẩy image vừa build lên Google Container Registry (GCR).
+    4. **deploy**: Triển khai image đó lên Google Cloud Run ở region `asia-southeast1`, cấu hình tài nguyên (1 CPU, 512MB RAM), set biến môi trường, bảo mật key từ Google Secret Manager.
+  - **Knative Service Definition (`service.yaml`):** Cấu hình khai báo cơ sở hạ tầng ở dạng code (IaC) cho Cloud Run. Cấu hình tự động scale từ tối thiểu 1 instance (minScale: "1" để tránh độ trễ cold start) đến tối đa 10 instances, đồng thời cấu hình healthcheck định kỳ qua livenessProbe (`/health`) và startupProbe (`/ready`).
 
 ###  Checkpoint 3
 
@@ -337,10 +366,13 @@ cd ../production-cloud-run
 cd ../../04-api-gateway/develop
 ```
 
-**Nhiệm vụ:** Đọc `app.py` và tìm:
-- API key được check ở đâu?
-- Điều gì xảy ra nếu sai key?
-- Làm sao rotate key?
+**Nhiệm vụ:** Đọc `app.py` và trả lời:
+- **API key được check ở đâu?**
+  - Trả lời: API key được kiểm tra tại dependency `verify_api_key` (dòng 39), được gắn vào endpoint `/ask` thông qua `_key: str = Depends(verify_api_key)`. Nó đọc giá trị bí mật từ biến môi trường `AGENT_API_KEY`.
+- **Điều gì xảy ra nếu sai key?**
+  - Trả lời: Nếu thiếu API key trong header `X-API-Key`, hệ thống trả về `401 Unauthorized` kèm thông báo `"Missing API key."`. Nếu cung cấp sai key, hệ thống trả về `403 Forbidden` kèm thông báo `"Invalid API key."`.
+- **Làm sao rotate key?**
+  - Trả lời: Thay đổi giá trị biến môi trường `AGENT_API_KEY` trên dashboard quản trị của cloud platform (hoặc file `.env`), sau đó kích hoạt redeploy/restart service mà không cần thay đổi hay build lại mã nguồn.
 
 Test:
 ```bash
@@ -387,9 +419,12 @@ curl http://localhost:8000/ask -X POST \
 ###  Exercise 4.3: Rate limiting
 
 **Nhiệm vụ:** Đọc `rate_limiter.py` và trả lời:
-- Algorithm nào được dùng? (Token bucket? Sliding window?)
-- Limit là bao nhiêu requests/minute?
-- Làm sao bypass limit cho admin?
+- **Algorithm nào được dùng?**
+  - Trả lời: Thuật toán **Sliding Window Counter** sử dụng một cấu trúc deque lưu trữ timestamp của các request gần nhất, liên tục loại bỏ các request đã quá thời gian trượt (60 giây) để kiểm tra số request hiện tại.
+- **Limit là bao nhiêu requests/minute?**
+  - Trả lời: Đối với user thường (`rate_limiter_user`) giới hạn là **10 requests/phút**. Đối với tài khoản admin (`rate_limiter_admin`) giới hạn là **100 requests/phút**.
+- **Làm sao bypass limit cho admin?**
+  - Trả lời: Bằng cách kiểm tra thuộc tính `role` của user sau khi decode JWT. Nếu `role == "admin"`, hệ thống sử dụng instance `rate_limiter_admin` có hạn mức cao hơn nhiều, hoặc có thể tùy biến bỏ qua không gọi hàm check của limiter.
 
 Test:
 ```bash
