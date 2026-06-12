@@ -27,6 +27,8 @@ def home():
     return {"message": "Hello! Agent is running on my machine :)"}
 
 
+
+
 @app.post("/ask")
 def ask_agent(question: str):
     # ❌ Vấn đề 3: Print thay vì proper logging
