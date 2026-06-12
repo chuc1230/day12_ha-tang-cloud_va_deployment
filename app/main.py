@@ -34,8 +34,16 @@ from app.auth import verify_api_key
 from app.rate_limiter import check_rate_limit
 from app.cost_guard import check_and_record_cost, get_daily_cost
 
-# Mock LLM (thay bằng OpenAI/Anthropic khi có API key)
-from utils.mock_llm import ask as llm_ask
+# Thêm đường dẫn để import từ Lab_Assignment
+import sys
+from pathlib import Path
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+
+from Lab_Assignment.src.agents import SupervisorAgent
+supervisor = SupervisorAgent()
+
 
 # ─────────────────────────────────────────────────────────
 # Logging — JSON structured
@@ -118,6 +126,7 @@ async def request_middleware(request: Request, call_next):
 # Models
 # ─────────────────────────────────────────────────────────
 class AskRequest(BaseModel):
+    user_id: str = Field(None, description="Identifier for the user")
     question: str = Field(..., min_length=1, max_length=2000,
                           description="Your question for the agent")
 
@@ -126,6 +135,8 @@ class AskResponse(BaseModel):
     answer: str
     model: str
     timestamp: str
+    sources: list = []
+    workflow_steps: list = []
 
 # ─────────────────────────────────────────────────────────
 # Endpoints
@@ -169,7 +180,11 @@ async def ask_agent(
         "client": str(request.client.host) if request.client else "unknown",
     }))
 
-    answer = llm_ask(body.question)
+    # Gọi Supervisor Agent từ Lab_Assignment
+    result = supervisor.route_and_execute(query=body.question, chat_history=[])
+    answer = result.get("answer")
+    sources = result.get("sources", [])
+    workflow_steps = result.get("workflow_steps", [])
 
     output_tokens = len(answer.split()) * 2
     check_and_record_cost(0, output_tokens)
@@ -179,6 +194,8 @@ async def ask_agent(
         answer=answer,
         model=settings.llm_model,
         timestamp=datetime.now(timezone.utc).isoformat(),
+        sources=sources,
+        workflow_steps=workflow_steps
     )
 
 

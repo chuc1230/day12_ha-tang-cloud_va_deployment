@@ -84,6 +84,12 @@ with st.sidebar:
     st.markdown("### ⚙️ Cấu Hình Hệ Thống")
     st.divider()
     
+    st.markdown("#### 🌐 Chế độ kết nối API")
+    connection_mode = st.radio("Lọc kênh gọi Agent", ["Gọi qua REST API (Production)", "Chạy trực tiếp (Local)"])
+    api_url = st.text_input("API Base URL", value="https://day12-ai-lab-production.up.railway.app")
+    api_key = st.text_input("X-API-Key", value="dev-key-change-me", type="password")
+
+    st.divider()
     st.markdown("#### 📊 Thông số vận hành (Mock)")
     st.metric(label="Mô hình LLM", value="gpt-4o-mini")
     st.metric(label="Giới hạn gọi", value="20 req/min")
@@ -207,15 +213,36 @@ with col_chat:
             
             with st.chat_message("assistant", avatar="⚖️"):
                 # Hiển thị luồng chạy ngầm của Agent
-                with st.status("🕵️ Supervisor đang phân tách yêu cầu và triệu tập các Worker...", expanded=True) as status:
-                    result = st.session_state.supervisor.route_and_execute(query=user_msg["content"], chat_history=history)
+                with st.status("🕵️ Supervisor đang xử lý yêu cầu...", expanded=True) as status:
+                    result = None
+                    if connection_mode == "Gọi qua REST API (Production)":
+                        try:
+                            import requests
+                            headers = {
+                                "X-API-Key": api_key,
+                                "Content-Type": "application/json"
+                            }
+                            payload = {"question": user_msg["content"]}
+                            st.write("📡 Đang kết nối tới API Production Railway...")
+                            res = requests.post(f"{api_url}/ask", json=payload, headers=headers, timeout=12)
+                            
+                            if res.status_code == 200:
+                                result = res.json()
+                            else:
+                                st.error(f"❌ Lỗi API ({res.status_code}): {res.text}")
+                        except Exception as e:
+                            st.warning(f"⚠️ Mất kết nối tới API ({str(e)}). Tự động fallback về chạy In-Process Local.")
+                    
+                    if result is None:
+                        st.write("⚙️ Đang thực thi xử lý In-Process Local...")
+                        result = st.session_state.supervisor.route_and_execute(query=user_msg["content"], chat_history=history)
                     
                     # Giả lập in tiến trình thực thi trực quan
                     for step in result.get("workflow_steps", []):
                         st.write(step["title"])
                         step_log = step["log"].replace('\n', ' | ')
                         st.caption(f"_{step_log}_")
-                        time.sleep(0.2)
+                        time.sleep(0.1)
                     
                     status.update(label="✅ Toàn bộ các Agent đã xử lý xong thông tin!", state="complete", expanded=False)
                 

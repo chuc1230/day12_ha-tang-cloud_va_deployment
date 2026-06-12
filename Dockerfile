@@ -26,6 +26,7 @@ WORKDIR /app
 COPY --from=builder /root/.local /app/.local
 
 # Copy application
+COPY app/ ./app/
 COPY Lab_Assignment/ ./Lab_Assignment/
 COPY utils/ ./utils/
 
